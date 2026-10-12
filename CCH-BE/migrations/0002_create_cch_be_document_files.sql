@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS cch_be_document_files (
+    document_id CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    complaint_id VARCHAR(25) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+    history_id VARCHAR(25) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+    document_type CHAR(3) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+    office_code VARCHAR(7) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+    uploaded_by VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+    media_type VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    file_extension VARCHAR(5) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    file_size INT UNSIGNED NOT NULL,
+    sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    storage_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    idempotency_key VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    request_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+    created_at DATETIME NOT NULL,
+    PRIMARY KEY (document_id),
+    UNIQUE KEY uq_cch_be_document_storage_key (storage_key),
+    UNIQUE KEY uq_cch_be_document_idempotency (idempotency_key),
+    KEY idx_cch_be_document_ticket (complaint_id, history_id, document_type, created_at),
+    KEY idx_cch_be_document_office (office_code, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

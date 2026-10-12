@@ -1,0 +1,196 @@
+package controller
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/gofiber/fiber/v3"
+
+	"cch.local/backend/internal/modules/authorization"
+	"cch.local/backend/internal/modules/masters/shippingservices"
+	"cch.local/backend/internal/platform/authentication"
+	"cch.local/backend/internal/platform/httpapi"
+)
+
+const maxRequestBodyBytes = 8 * 1024
+
+type Service interface {
+	List(context.Context, authentication.VerifiedIdentity) ([]shippingservices.ShippingService, error)
+	Get(context.Context, authentication.VerifiedIdentity, string) (shippingservices.ShippingService, error)
+	Create(context.Context, authentication.VerifiedIdentity, shippingservices.CreateCommand) (shippingservices.ShippingService, error)
+	Update(context.Context, authentication.VerifiedIdentity, shippingservices.UpdateCommand) (shippingservices.ShippingService, error)
+	Deactivate(context.Context, authentication.VerifiedIdentity, string) error
+}
+
+type Controller struct {
+	service Service
+}
+
+type createRequest struct {
+	Code        string `json:"code"`
+	Description string `json:"description"`
+	TrackingURL string `json:"tracking_url"`
+	Active      *bool  `json:"active"`
+}
+
+type updateRequest struct {
+	Description string `json:"description"`
+	TrackingURL string `json:"tracking_url"`
+	Active      *bool  `json:"active"`
+}
+
+func New(service Service) *Controller {
+	return &Controller{service: service}
+}
+
+func (controller *Controller) Register(router fiber.Router) {
+	router.Get("/masters/shipping-services", controller.List)
+	router.Post("/masters/shipping-services", controller.Create)
+	router.Get("/masters/shipping-services/:code", controller.Get)
+	router.Put("/masters/shipping-services/:code", controller.Update)
+	router.Delete("/masters/shipping-services/:code", controller.Deactivate)
+}
+
+func (controller *Controller) List(ctx fiber.Ctx) error {
+	if controller == nil || controller.service == nil {
+		return fiber.ErrServiceUnavailable
+	}
+	setNoStore(ctx)
+	identity, ok := httpapi.VerifiedIdentityFromContext(ctx)
+	if !ok {
+		return fiber.ErrUnauthorized
+	}
+	values, err := controller.service.List(ctx.Context(), identity)
+	if err != nil {
+		return controllerError(err)
+	}
+	return ctx.JSON(values)
+}
+
+func (controller *Controller) Get(ctx fiber.Ctx) error {
+	if controller == nil || controller.service == nil {
+		return fiber.ErrServiceUnavailable
+	}
+	setNoStore(ctx)
+	identity, ok := httpapi.VerifiedIdentityFromContext(ctx)
+	if !ok {
+		return fiber.ErrUnauthorized
+	}
+	value, err := controller.service.Get(ctx.Context(), identity, strings.TrimSpace(ctx.Params("code")))
+	if err != nil {
+		return controllerError(err)
+	}
+	return ctx.JSON(value)
+}
+
+func (controller *Controller) Create(ctx fiber.Ctx) error {
+	if controller == nil || controller.service == nil {
+		return fiber.ErrServiceUnavailable
+	}
+	setNoStore(ctx)
+	identity, ok := httpapi.VerifiedIdentityFromContext(ctx)
+	if !ok {
+		return fiber.ErrUnauthorized
+	}
+	var request createRequest
+	if err := decodeStrict(ctx, &request); err != nil {
+		return fiber.ErrBadRequest
+	}
+	active := true
+	if request.Active != nil {
+		active = *request.Active
+	}
+	value, err := controller.service.Create(ctx.Context(), identity, shippingservices.CreateCommand{
+		Code: request.Code, Description: request.Description, TrackingURL: request.TrackingURL, Active: active,
+	})
+	if err != nil {
+		return controllerError(err)
+	}
+	return ctx.Status(fiber.StatusCreated).JSON(value)
+}
+
+func (controller *Controller) Update(ctx fiber.Ctx) error {
+	if controller == nil || controller.service == nil {
+		return fiber.ErrServiceUnavailable
+	}
+	setNoStore(ctx)
+	identity, ok := httpapi.VerifiedIdentityFromContext(ctx)
+	if !ok {
+		return fiber.ErrUnauthorized
+	}
+	var request updateRequest
+	if err := decodeStrict(ctx, &request); err != nil || request.Active == nil {
+		return fiber.ErrBadRequest
+	}
+	value, err := controller.service.Update(ctx.Context(), identity, shippingservices.UpdateCommand{
+		Code: strings.TrimSpace(ctx.Params("code")), Description: request.Description,
+		TrackingURL: request.TrackingURL, Active: *request.Active,
+	})
+	if err != nil {
+		return controllerError(err)
+	}
+	return ctx.JSON(value)
+}
+
+func (controller *Controller) Deactivate(ctx fiber.Ctx) error {
+	if controller == nil || controller.service == nil {
+		return fiber.ErrServiceUnavailable
+	}
+	setNoStore(ctx)
+	identity, ok := httpapi.VerifiedIdentityFromContext(ctx)
+	if !ok {
+		return fiber.ErrUnauthorized
+	}
+	code := strings.TrimSpace(ctx.Params("code"))
+	if code == "" || utf8.RuneCountInString(code) > 3 {
+		return fiber.ErrBadRequest
+	}
+	if err := controller.service.Deactivate(ctx.Context(), identity, code); err != nil {
+		return controllerError(err)
+	}
+	return ctx.SendStatus(fiber.StatusNoContent)
+}
+
+func decodeStrict(ctx fiber.Ctx, target any) error {
+	body := ctx.Body()
+	if len(body) == 0 || len(body) > maxRequestBodyBytes {
+		return shippingservices.ErrInvalidInput
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return shippingservices.ErrInvalidInput
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return shippingservices.ErrInvalidInput
+	}
+	return nil
+}
+
+func setNoStore(ctx fiber.Ctx) {
+	ctx.Set("Cache-Control", "private, no-store")
+	ctx.Set("Pragma", "no-cache")
+}
+
+func controllerError(err error) error {
+	switch {
+	case errors.Is(err, shippingservices.ErrInvalidInput):
+		return fiber.ErrBadRequest
+	case errors.Is(err, shippingservices.ErrNotFound):
+		return fiber.ErrNotFound
+	case errors.Is(err, shippingservices.ErrAlreadyExists):
+		return fiber.NewError(fiber.StatusConflict, "shipping service code already exists")
+	case errors.Is(err, authorization.ErrPermissionDenied),
+		errors.Is(err, authorization.ErrSystemAdministratorUnsupported),
+		errors.Is(err, authorization.ErrInvalidUserLevels):
+		return fiber.ErrForbidden
+	default:
+		return httpapi.AuthorizationHTTPError(err)
+	}
+}
